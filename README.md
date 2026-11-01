@@ -10,6 +10,10 @@ das Werkzeug, mit dem es im zweiten Anlauf an einem Nachmittag geklappt hat.
 
 Unabhängiges Projekt, nicht mit ElevenLabs oder Shure verbunden.
 
+![Aufnahme läuft: Prompter mit Lauftext, Pegelanzeige im grünen Bereich](docs/studio-aufnahme.png)
+
+![Nach dem Stopp: automatische Prüfung des Takes](docs/studio-ergebnis.png)
+
 ---
 
 ## Was das Studio kann
