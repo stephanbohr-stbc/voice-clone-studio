@@ -1,0 +1,13 @@
+# Aufnahmen gehoeren nicht ins Repo
+*.wav
+*.mp3
+*.m4a
+_upload/
+takes/
+
+# Zugangsdaten
+.env
+*.key
+
+.DS_Store
+__pycache__/

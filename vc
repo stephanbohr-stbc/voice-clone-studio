@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+"""vc - Voice-Clone-Aufnahme-Werkzeug fuer den ElevenLabs PVC (Shure MV7 @ macOS).
+
+Nimmt kompromisslos roh auf: 24 Bit / 48 kHz / mono WAV, keinerlei Bearbeitung.
+
+  vc doctor          Setup pruefen (Geraet, Pegel, DSP-Hinweise)
+  vc gain            Eingangspegel automatisch einregeln (du sprichst, ich stelle)
+  vc noise           20 s Stille messen -> Rauschabstand-Test
+  vc rec BLOCK       Take aufnehmen, Stopp mit Ctrl-C
+  vc check [DATEI]   Datei(en) gegen die PVC-Zielwerte pruefen
+  vc status          Wie viele Netto-Minuten liegen schon vor
+  vc kalibrieren     Gefuehrter Vorlauf vor der Session (empfohlen)
+  vc meter           Live-Pegelanzeige im Terminal
+  vc studio          Browser-Oberflaeche: Prompter, Pegel, Start/Stop
+  vc prep            Lange Pausen trimmen, Upload-Ordner bauen
+
+Ohne Argument startet der gefuehrte Ablauf (= vc run).
+"""
+import os, re, subprocess, sys, shutil, glob, time
+
+MIC        = os.environ.get("VC_MIC", "Shure MV7+")
+TAKES      = os.path.expanduser(os.environ.get("VC_TAKES", "~/Music/VoiceClone-Takes"))
+UPLOAD     = os.path.join(TAKES, "_upload")
+PEAK_TGT   = -7.0      # dBFS, Zielspitze normaler Sprechlautstaerke
+PEAK_TOL   = 1.5
+NOISE_MAX  = -65.0     # dBFS RMS in Stille
+LUFS_RANGE = (-24.0, -19.0)
+
+C = dict(r="\033[31m", g="\033[32m", y="\033[33m", b="\033[1m", d="\033[2m", x="\033[0m")
+def say(m, c=""): print(f"{C.get(c,'')}{m}{C['x']}")
+def ok(m):   say(f"  OK    {m}", "g")
+def warn(m): say(f"  WARN  {m}", "y")
+def bad(m):  say(f"  FEHL  {m}", "r")
+def hdr(m):  say(f"\n{m}\n" + "-"*len(m), "b")
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True, **kw)
+
+def mic_index():
+    out = sh('ffmpeg -f avfoundation -list_devices true -i "" 2>&1').stdout + \
+          sh('ffmpeg -f avfoundation -list_devices true -i "" 2>&1').stderr
+    audio = out.split("AVFoundation audio devices")[-1]
+    for line in audio.splitlines():
+        m = re.search(r"\[(\d+)\]\s+(.*)", line)
+        if m and MIC.lower() in m.group(2).lower():
+            return int(m.group(1))
+    return None
+
+def input_device():
+    r = sh(["SwitchAudioSource", "-t", "input", "-c"])
+    return r.stdout.strip() if r.returncode == 0 else "?"
+
+def set_input_device():
+    return sh(["SwitchAudioSource", "-t", "input", "-s", MIC]).returncode == 0
+
+def in_vol():
+    return int(sh(['osascript', '-e', 'input volume of (get volume settings)']).stdout.strip() or 0)
+
+def set_in_vol(v):
+    v = max(0, min(100, int(round(v))))
+    sh(['osascript', '-e', f'set volume input volume {v}'])
+    time.sleep(0.4)
+    return in_vol()
+
+def record(path, seconds=None, idx=None):
+    idx = idx if idx is not None else mic_index()
+    if idx is None:
+        bad(f"{MIC} nicht gefunden. Mikro eingesteckt?"); sys.exit(1)
+    # sox statt ffmpeg/avfoundation: ffmpeg verliert beim Aufnehmen Samples
+    # (170 Knackser/min gegen 11 bei sox, Paralleltest 31.10.2026)
+    cmd = ["rec", "-q", "-c", "1", "-r", "48000", "-b", "24", path]
+    if seconds:
+        cmd += ["trim", "0", str(seconds)]
+    try:
+        subprocess.run(cmd, env=dict(os.environ, AUDIODEV=MIC))
+    except KeyboardInterrupt:
+        pass
+    return os.path.exists(path)
+
+def countdown(n=3):
+    for i in range(n, 0, -1):
+        sys.stdout.write(f"\r        {i} ... "); sys.stdout.flush(); time.sleep(1)
+    sys.stdout.write("\r        SPRICH JETZT      \n"); sys.stdout.flush()
+
+def measure(path):
+    r = sh(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "astats,ebur128=peak=true", "-f", "null", "-"])
+    t = r.stderr
+    def g(pat, default=None):
+        # ebur128 druckt fortlaufend mit - immer den LETZTEN Wert nehmen
+        hits = re.findall(pat, t)
+        return float(hits[-1]) if hits else default
+    d = sh(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).stdout.strip()
+    return dict(
+        peak = g(r"Peak level dB:\s*(-?[\d.]+)"),
+        rms  = g(r"RMS level dB:\s*(-?[\d.]+)"),
+        lufs = g(r"I:\s*(-?[\d.]+) LUFS"),
+        tpk  = g(r"Peak:\s*(-?[\d.]+) dBFS"),
+        dur  = float(d) if d else 0.0,
+    )
+
+
+def aussetzer(path):
+    """Zaehlt Bruchstellen im Signalverlauf - Zeichen fuer verlorene USB-Pakete.
+
+    Ein Aussetzer bricht die lineare Fortsetzung der Wellenform. Verglichen wird
+    gegen den oertlichen Durchschnitt, sonst findet man nur die lautesten Stellen.
+    Haeufigste Ursache: ein USB-Hub zwischen Mikrofon und Rechner.
+    """
+    r = sh(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af",
+            "aformat=s16:48000,astats=metadata=1:reset=1:length=0.4,"
+            "ametadata=print:key=lavfi.astats.Overall.Flat_factor:file=-",
+            "-f", "null", "-"])
+    # grobe Naeherung ueber ffmpeg; genaue Zaehlung macht entknacksen.py
+    return len(re.findall(r"Flat_factor=(?!0\.0)", r.stdout + r.stderr))
+
+
+def snr(path):
+    """Grundrauschen (leiseste Sekunde) und Sprechpegel (lauteste 10 %) in dBFS."""
+    r = sh(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af",
+            "asetnsamples=n=48000:p=0,astats=metadata=1:reset=1,"
+            "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+            "-f", "null", "-"])
+    vals = sorted(float(x) for x in re.findall(r"RMS_level=(-?[\d.]+)", r.stdout + r.stderr)
+                  if x not in ("-inf", "inf"))
+    if len(vals) < 5: return None, None, None
+    floor  = vals[0]
+    speech = vals[int(len(vals) * 0.9)]
+    return floor, speech, speech - floor
+
+
+BLOECKE = [
+    ("block-a", "Phonetik",        "Alle Laute, Umlaute, Cluster. Ruhig und deutlich.",              2),
+    ("block-b", "Zahlen & Kuerzel","Kuerzel EINZELN buchstabieren. Anglizismen normal sprechen.",     3),
+    ("block-c", "Narration",       "EIGENE Texte. Der Duktus, den du spaeter meistens willst.",      40),
+    ("block-d", "Lehr-Duktus",     "Erklaeren, einordnen, direkt ansprechen. Lebendiger als C.",     30),
+    ("block-e", "Dynamik",         "Fragen, Betonung, Aufzaehlung, Waerme.",                          3),
+]
+
+def have(block):
+    fs = [f for f in glob.glob(os.path.join(TAKES, f"{block}-*.wav")) if measure(f)["dur"] >= 30]
+    return sum(measure(f)["dur"] for f in fs) / 60, len(fs)
+
+
+def cmd_run():
+    while True:
+        os.makedirs(TAKES, exist_ok=True)
+        hdr("Stimmklon - gefuehrter Ablauf")
+        total = 0.0
+        say("  Vorbereitung", "d")
+        say("   0  KALIBRIEREN         alles vor der Session, gefuehrt", "b")
+        say("   1  Setup pruefen        Geraet, Eingang, Software")
+        say("   2  Rauschtest           Ist der Raum leise genug?")
+        say("   3  Pegel messen         Sitzt der Gain im Mikro?")
+        say("   M  Pegel live           Balkenanzeige zum Einrichten")
+        say("   S  Studio im Browser    Prompter + Pegel + Start/Stop", "b")
+        say("\n  Aufnahme", "d")
+        for i, (b, titel, _, ziel) in enumerate(BLOECKE, start=4):
+            mins, n = have(b)
+            total += mins
+            mark = "OK " if mins >= ziel * 0.8 else (".. " if mins else "   ")
+            col  = "g" if mins >= ziel * 0.8 else ("y" if mins else "")
+            say(f"  {i:2d}  {titel:<16} {mark} {mins:5.1f} / {ziel:3d} min" +
+                (f"   ({n} Takes)" if n else ""), col)
+        say("\n  Abschluss", "d")
+        say("   9  Takes pruefen        Pegel, Clipping, Rauschabstand")
+        say("  10  Upload-Ordner bauen  Pausen kuerzen, fertig fuer ElevenLabs")
+        say(f"\n  Gesamt: {total:.1f} min   |   PVC-Minimum 30  ·  gut 100  ·  optimum 120", "b")
+        say("  Auswahl (Zahl), oder q zum Beenden: ", "b")
+        try:
+            w = input("  > ").strip().lower()
+        except EOFError:
+            return
+        if w in ("q", "quit", "exit", ""): return
+        print()
+        if   w == "0":  cmd_kalibrieren()
+        elif w == "m":  cmd_meter()
+        elif w == "s":
+            os.execv(sys.executable, [sys.executable,
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio.py")])
+        elif w == "1":  cmd_doctor()
+        elif w == "2":  cmd_noise()
+        elif w == "3":  cmd_gain()
+        elif w in ("4","5","6","7","8"):
+            b, titel, hinweis, ziel = BLOECKE[int(w) - 4]
+            hdr(f"{titel}  ({b})")
+            say(f"  {hinweis}", "d")
+            say(f"  Prompter: sprechtexte/{b}.txt" if b not in ("block-c",) else
+                "  Prompter: eigener Fliesstext (sprechtexte/block-c.txt anlegen)", "d")
+            say("\n  Ctrl-C beendet den Take.\n", "b")
+            input("  Enter zum Start ... ")
+            cmd_rec(b)
+        elif w == "9":  cmd_check()
+        elif w == "10": cmd_prep()
+        else: warn("Unbekannte Auswahl.")
+        print()
+        try: input("  Enter fuer das Menue ... ")
+        except EOFError: return
+
+
+def mundgeraeusche(path):
+    """Knackser pro Minute, gemessen auf SENDEPEGEL (-16 LUFS).
+
+    Entscheidend: ElevenLabs gibt rund -16 LUFS aus. Auf Rohpegel (-26 LUFS)
+    liegen Lippen- und Zungengeraeusche unter der Hoerschwelle und fallen nicht
+    auf - im generierten Material sind sie dann deutlich zu hoeren.
+    """
+    tmp = "/tmp/vc_mund.wav"
+    r = sh(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", path,
+            "-ac", "1", "-ar", "48000",
+            "-af", "loudnorm=I=-16:TP=-1.5,highpass=f=2000",
+            "-c:a", "pcm_s16le", tmp])
+    if r.returncode != 0 or not os.path.exists(tmp): return None
+    import wave, struct, statistics
+    w = wave.open(tmp); n = w.getnframes(); sr = w.getframerate()
+    d = struct.unpack(f"<{n}h", w.readframes(n)); win = int(sr * 0.005)
+    e = [(sum(x * x for x in d[i:i+win]) / win) ** 0.5 for i in range(0, n - win, win)]
+    if len(e) < 10: return None
+    med = statistics.median([x for x in e if x > 0] or [1]); c = 0
+    for i in range(2, len(e) - 2):
+        u = statistics.median(e[i-2:i+3])
+        if e[i] > max(u * 6, med * 3) and e[i-1] < e[i] * 0.5 and e[i+1] < e[i] * 0.6:
+            c += 1
+    return c / (len(e) * 0.005) * 60
+
+
+def cmd_meter(dauer=0):
+    """Live-Pegelanzeige im Terminal. Ctrl-C beendet."""
+    hdr("Pegel live")
+    idx = mic_index()
+    if idx is None: bad("Mikro nicht gefunden"); return
+    if input_device() != MIC: set_input_device()
+    say(f"  Ziel: Spitzen um {PEAK_TGT:+.0f} dBFS. Abstand 20-25 cm.", "d")
+    say("  Ctrl-C beendet.\n", "d")
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-f", "avfoundation", "-i", f":{idx}",
+           "-ac", "1", "-ar", "48000"]
+    if dauer: cmd += ["-t", str(dauer)]
+    # astats schreibt pro Kanal (".1."), und ametadata geht auf stderr
+    cmd += ["-af", "asetnsamples=n=4800:p=0,astats=metadata=1:reset=1,"
+                   "ametadata=print:key=lavfi.astats.1.Peak_level",
+            "-f", "null", "-"]
+    pr = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True, bufsize=1)
+    halt = []
+    try:
+        for ln in pr.stderr:
+            m = re.search(r"Peak_level=(-?[\d.]+|-inf)", ln)
+            if not m: continue
+            v = -90.0 if "inf" in m.group(1) else float(m.group(1))
+            halt.append(v); halt[:] = halt[-40:]
+            # Skala -60 .. 0 dBFS auf 50 Zeichen
+            n = max(0, min(50, int((v + 60) / 60 * 50)))
+            if v > -1.0:      col, tag = "\033[31m", "CLIPPING"
+            elif v > -3.0:    col, tag = "\033[33m", "zu heiss"
+            elif v > -12.0:   col, tag = "\033[32m", "gut"
+            elif v > -25.0:   col, tag = "\033[33m", "leise"
+            else:             col, tag = "\033[2m",  "sehr leise"
+            bar = col + "#" * n + "\033[0m" + "." * (50 - n)
+            sys.stdout.write(f"\r  {v:6.1f} dBFS  |{bar}|  {tag:10s}")
+            sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        pr.terminate()
+        print()
+        if halt:
+            sp = [x for x in halt if x > -40]
+            if sp:
+                say(f"\n  letzte Sekunden: Spitze {max(sp):+.1f} dBFS, "
+                    f"Mittel {sum(sp)/len(sp):+.1f} dBFS")
+
+
+def cmd_kalibrieren():
+    """Fuenf Minuten Vorlauf, der eine verpfuschte Session verhindert."""
+    hdr("Kalibrieren vor der Session")
+    say("  Fuenf Schritte. Erst wenn alle gruen sind, lohnt ein langer Take.\n", "b")
+
+    say("  1/5  Geraet und Eingang", "b")
+    cmd_doctor()
+
+    say("\n  2/5  Abstand einstellen", "b")
+    say("       20-25 cm zum Mikro, leicht daneben sprechen (10-15 Grad off-axis).")
+    say("       Position mit Klebeband markieren - sie muss ueber alle Sessions halten.")
+    say("       NICHT naeher: unter 15 cm werden Mundgeraeusche ueberbetont.", "d")
+    try: input("\n       Enter, wenn der Abstand sitzt ... ")
+    except EOFError: return
+
+    say("\n  3/5  Stimme vorbereiten", "b")
+    say("       Wasser bei Zimmertemperatur trinken.")
+    say("       Ein Stueck gruener Apfel bricht den Speichelfilm, der schnalzt.")
+    say("       Kein Kaffee, keine Milchprodukte in den zwei Stunden davor.", "d")
+    try: input("\n       Enter, wenn du bereit bist ... ")
+    except EOFError: return
+
+    say("\n  4/5  Rauschtest", "b")
+    cmd_noise()
+
+    say("\n  5/5  Probetake, 2 Minuten", "b")
+    say("       Normale Vortragslautstaerke, so wie du spaeter einsprichst.")
+    say("       Ctrl-C beendet frueher.\n")
+    try: input("       Enter zum Start ... ")
+    except EOFError: return
+    tmp = os.path.join(TAKES, "_probe.wav")
+    os.makedirs(TAKES, exist_ok=True)
+    record(tmp, 120)
+    print()
+    m = measure(tmp)
+    report(tmp, m)
+
+    mg = mundgeraeusche(tmp)
+    pk = m.get("peak")
+    print()
+    if mg is not None and mg > 20:
+        bad("Mundgeraeusche zu hoch - NOCH NICHT aufnehmen.")
+        say("       Weiter weg, mehr trinken, Apfel - dann 'vc kalibrieren' nochmal.", "d")
+    elif pk is not None and abs(PEAK_TGT - pk) > 4:
+        d = PEAK_TGT - pk
+        warn(f"Gain in ShurePlus MOTIV um {d:+.0f} dB nachstellen, dann nochmal.")
+        say("       Bei 20-25 cm kommt weniger Signal an - der alte Wert gilt nicht mehr.", "d")
+    else:
+        ok("Alles im Lot. Du kannst die Session starten.")
+        say("\n       MOTIV-Gain-Wert jetzt notieren.", "b")
+    say(f"\n  Probetake liegt unter {tmp} - loeschen, nicht hochladen.", "d")
+
+
+def cmd_doctor():
+    hdr("Setup-Check")
+    idx = mic_index()
+    (ok if idx is not None else bad)(f"{MIC} am USB (Index {idx})" if idx is not None else f"{MIC} nicht gefunden")
+    dev = input_device()
+    if dev == MIC:
+        ok(f"Systemeingang steht auf {MIC}")
+    else:
+        warn(f"Systemeingang steht auf '{dev}' -> setze auf {MIC}")
+        if set_input_device(): ok(f"Systemeingang jetzt: {input_device()}")
+        else: bad("Umschalten fehlgeschlagen - Mikro angeschlossen?")
+    v = in_vol()
+    (ok if v >= 50 else warn)(f"Eingangslautstaerke {v}/100" + ("" if v >= 50 else "  (sehr niedrig -> 'vc gain')"))
+    motiv = glob.glob("/Applications/*MOTIV*") + glob.glob("/Applications/Setapp/*MOTIV*")
+    if motiv: ok("ShurePlus MOTIV installiert")
+    else:
+        warn("ShurePlus MOTIV fehlt -> brew install --cask shureplus-motiv")
+        say("        Nur dort schaltest du im MV7 ab, was ElevenLabs ruinieren wuerde:", "d")
+        say("        Auto Level Mode AUS  |  EQ auf Flat  |  Limiter AUS  |  Compressor AUS", "d")
+    say(f"\n  Takes landen in: {TAKES}", "d")
+
+
+def cmd_gain(lead=3):
+    """Misst den Pegel und sagt, um wieviel dB der Gain IM MIKRO nachzustellen ist.
+
+    Die macOS-Eingangslautstaerke wirkt beim MV7 nicht auf das USB-Signal -
+    gestellt wird ausschliesslich in ShurePlus MOTIV bzw. am Mikro selbst.
+    """
+    hdr("Pegel messen")
+    if input_device() != MIC: set_input_device()
+    say(f"Ziel: Sprechspitzen bei {PEAK_TGT:+.0f} dBFS.")
+    say("Gleich 12 Sekunden DURCHGEHEND in normaler Vortragslautstaerke sprechen,")
+    say("im echten Abstand (5-12 cm).\n")
+    if lead > 3:
+        say(f"Start in {lead} Sekunden.", "b")
+        for i in range(lead, 0, -1):
+            sys.stdout.write(f"\r  {i:3d} s ..."); sys.stdout.flush(); time.sleep(1)
+        print()
+    else:
+        countdown(3)
+    tmp = "/tmp/vc_gain.wav"
+    record(tmp, 12)
+    m = measure(tmp)
+    pk = m["peak"]
+    if pk is None: bad("Messung fehlgeschlagen"); return
+    say(f"\n  Spitze     {pk:+6.1f} dBFS   (Ziel {PEAK_TGT:+.0f})")
+    if m["lufs"] is not None:
+        say(f"  Lautheit   {m['lufs']:+6.1f} LUFS")
+    print()
+    if pk > -1.0:
+        bad("CLIPPING. Gain in MOTIV deutlich runter.")
+    elif abs(PEAK_TGT - pk) <= PEAK_TOL:
+        ok(f"Sitzt. Nichts aendern.")
+        say("\n  MOTIV-Gain-Wert jetzt notieren - er muss ueber ALLE Sessions", "b")
+        say("  identisch bleiben, sonst franst der Clone aus.", "b")
+    else:
+        d = PEAK_TGT - pk
+        warn(f"Gain in ShurePlus MOTIV um {d:+.0f} dB nachstellen, dann 'vc gain' nochmal.")
+        say("\n  Falls sich der Pegel dabei NICHT bewegt: Auto Level Mode ist noch an.", "d")
+        say("  MOTIV -> Manual Mode, Auto Level AUS, Limiter AUS, Compressor AUS.", "d")
+
+def cmd_noise():
+    """Prueft nicht nur den Mittelwert, sondern auch die Gleichmaessigkeit.
+
+    Ein Raum, der im Schnitt leise ist, aber alle paar Sekunden einen Ausschlag hat,
+    ist zum Einsprechen ungeeignet - die Ausschlaege landen in den Sprechpausen.
+    """
+    hdr("Rauschtest")
+    if input_device() != MIC: set_input_device()
+    say("20 Sekunden ABSOLUTE STILLE. Nicht sprechen, nicht bewegen, nicht atmen ins Mikro.")
+    input("Enter zum Start ... ")
+    tmp = "/tmp/vc_noise.wav"
+    record(tmp, 20)
+    r = sh(["ffmpeg", "-hide_banner", "-nostats", "-i", tmp, "-af",
+            "asetnsamples=n=48000:p=0,astats=metadata=1:reset=1,"
+            "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-", "-f", "null", "-"])
+    v = sorted(float(x) for x in re.findall(r"RMS_level=(-?[\d.]+)", r.stdout + r.stderr))
+    if len(v) < 5:
+        bad("Messung fehlgeschlagen."); return
+    leise, med, laut = v[0], v[len(v) // 2], v[-1]
+    spikes = sum(1 for x in v if x > NOISE_MAX + 3)
+    say(f"\n  leiseste Sekunde {leise:+7.1f} dBFS   <- so ruhig KANN der Raum")
+    say(f"  Median           {med:+7.1f} dBFS   (Ziel <= {NOISE_MAX:.0f})")
+    say(f"  lauteste Sekunde {laut:+7.1f} dBFS")
+    say(f"  Ausschlaege      {spikes} von {len(v)} Sekunden\n")
+    if med <= NOISE_MAX and spikes == 0:
+        ok("Ruhig UND gleichmaessig. Du kannst einsprechen.")
+    elif spikes:
+        bad(f"{spikes} Ausschlaege - die landen spaeter in den Sprechpausen.")
+        say("  Typische Ursachen: Luefter der anspringt, Kabel am Mikrofonstaender,", "d")
+        say("  Bewegung am Tisch, Nebenraum. Ursache suchen, dann nochmal.", "d")
+    else:
+        warn("Im Schnitt zu laut. Lueftung/Rechner/Kuehlschrank pruefen, dann nochmal.")
+
+
+def cmd_rec(block):
+    os.makedirs(TAKES, exist_ok=True)
+    if input_device() != MIC: set_input_device()
+    n = len(glob.glob(os.path.join(TAKES, f"{block}-*.wav"))) + 1
+    path = os.path.join(TAKES, f"{block}-{n:02d}.wav")
+    hdr(f"Aufnahme {os.path.basename(path)}")
+    say(f"Eingang {input_device()} @ {in_vol()}/100  -  24 Bit / 48 kHz / mono, unbearbeitet", "d")
+    say("Stopp mit Ctrl-C.\n", "b")
+    record(path)
+    if os.path.exists(path):
+        m = measure(path)
+        say("")
+        report(path, m)
+
+
+def report(path, m):
+    # Rauschabstand schlaegt Absolutpegel: ElevenLabs normalisiert selbst.
+    name = os.path.basename(path)
+    say(f"  {name}   {m['dur']/60:.1f} min", "b")
+    p = m["tpk"] if m["tpk"] is not None else m["peak"]
+    line = lambda good, txt: (ok if good else warn)(txt)
+    line(p < -0.5, f"Clipping   {'keins' if p < -0.5 else 'JA - Take verwerfen'}")
+    line(-14 <= p <= -3, f"Spitze     {p:+6.1f} dBFS")
+    if m["lufs"] is not None:
+        say(f"        Lautheit   {m['lufs']:+6.1f} LUFS", "d")
+    fl, sp, sn = snr(path)
+    if sn is not None:
+        line(sn >= 45, f"Rauschabstand {sn:5.0f} dB   (Ziel >= 45)   Rauschen {fl:+.0f} dBFS")
+    mg = mundgeraeusche(path)
+    if mg is not None:
+        line(mg <= 20, f"Mundgeraeusche {mg:4.0f}/min  (Ziel <= 20, auf -16 LUFS gemessen)")
+        if mg > 20:
+            say("        -> Abstand auf 20-25 cm erhoehen, Wasser trinken,", "d")
+            say("           Stueck gruener Apfel bricht den Speichelfilm.", "d")
+
+
+def cmd_check(arg=None):
+    files = [arg] if arg else sorted(glob.glob(os.path.join(TAKES, "*.wav")))
+    if not files: warn(f"Keine WAVs in {TAKES}"); return
+    hdr("Take-Pruefung")
+    for f in files:
+        report(f, measure(f)); print()
+
+
+def cmd_status():
+    files = sorted(glob.glob(os.path.join(TAKES, "*.wav")))
+    total = sum(measure(f)["dur"] for f in files) / 60
+    hdr("Materialstand")
+    say(f"  {len(files)} Takes, {total:.1f} Minuten brutto")
+    for lbl, need in (("PVC-Minimum", 30), ("Gutes Ergebnis", 100), ("Optimum", 120)):
+        m = "OK" if total >= need else f"noch {need-total:.0f} min"
+        (ok if total >= need else say)(f"  {lbl:<16} {need:>3} min   {m}")
+
+
+def sprech_median(path):
+    """Median-RMS der Sekunden mit Sprache. Pausen bleiben aussen vor."""
+    r = sh(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af",
+            "asetnsamples=n=48000:p=0,astats=metadata=1:reset=1,"
+            "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-", "-f", "null", "-"])
+    v = [float(x) for x in re.findall(r"RMS_level=(-?[\d.]+)", r.stdout + r.stderr)]
+    sp = sorted(x for x in v if x > -45)
+    return sp[len(sp) // 2] if len(sp) >= 30 else None
+
+
+def cmd_prep(ziel=-26.0):
+    """Die Takes auf einen gemeinsamen Sprechpegel bringen.
+
+    Die Pegelanpassung ist eine reine lineare Verstaerkung - kein Kompressor,
+    kein EQ, kein Denoise. Dynamik und Rauschabstand bleiben unveraendert, nur
+    der Gesamtpegel wandert. Damit ElevenLabs nicht ueber unterschiedlich laute
+    Dateien mitteln muss.
+    """
+    files = sorted(glob.glob(os.path.join(TAKES, "*.wav")))
+    if not files: warn("Keine Takes da."); return
+    os.makedirs(UPLOAD, exist_ok=True)
+    hdr(f"Upload-Ordner bauen (Pegel auf {ziel:.0f} dBFS angleichen)")
+    n = 0
+    for f in files:
+        name = os.path.basename(f)
+        if measure(f)["dur"] < 30:
+            warn(f"  {name} nur {measure(f)['dur']:.0f}s - Fehl-Take, uebersprungen")
+            continue
+        med = sprech_median(f)
+        if med is None:
+            warn(f"  {name} zu wenig Sprache - uebersprungen"); continue
+        g = ziel - med
+        # Clipping-Schutz: nach der Anhebung mindestens 1 dB Luft lassen
+        pk = measure(f)["peak"]
+        if pk is not None and pk + g > -1.0:
+            g = -1.0 - pk
+        out = os.path.join(UPLOAD, name)
+        # KEIN Pausenschnitt. silenceremove schneidet mitten im Signalverlauf statt
+        # im Nulldurchgang - jede Schnittkante ist ein Knacks, und der Klon lernt ihn
+        # mit. Gemessen am 24.09.2026: block-f-01 ging von 99 auf 328 harte Sprünge.
+        # ElevenLabs verlangt kein Kürzen von Pausen.
+        sh(["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-i", f,
+            "-af", f"volume={g:.2f}dB",
+            "-ac", "1", "-ar", "48000", "-c:a", "pcm_s24le", out])
+        neu_med = sprech_median(out)
+        flag = "" if abs(g) < 1.0 else f"   ({g:+.1f} dB)"
+        say(f"  {name:18s} {med:6.1f} -> {neu_med:6.1f} dBFS   "
+            f"{measure(out)['dur']/60:5.1f} min{flag}")
+        n += 1
+    ok(f"{n} Dateien in {UPLOAD}")
+    say("  Nur der Gesamtpegel wurde angepasst - keine Kompression, kein EQ.", "d")
+    say("  Diesen Ordner bei ElevenLabs hochladen.", "d")
+
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if a and a[0] in ("-h", "--help", "help"): print(__doc__); sys.exit(0)
+    c = a[0] if a else "run"
+    try:
+        if   c == "run":    cmd_run()
+        elif c in ("kalibrieren","kalib"): cmd_kalibrieren()
+        elif c == "meter":  cmd_meter(int(a[1]) if len(a)>1 and a[1].isdigit() else 0)
+        elif c == "studio":
+            os.execv(sys.executable, [sys.executable,
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio.py")])
+        elif c == "doctor": cmd_doctor()
+        elif c == "gain":   cmd_gain(int(a[1]) if len(a) > 1 and a[1].isdigit() else 3)
+        elif c == "noise":  cmd_noise()
+        elif c == "rec":    cmd_rec(a[1] if len(a) > 1 else "take")
+        elif c == "check":  cmd_check(a[1] if len(a) > 1 else None)
+        elif c == "status": cmd_status()
+        elif c == "prep":   cmd_prep(float(a[1]) if len(a) > 1 else -26.0)
+        else: print(__doc__)
+    except KeyboardInterrupt:
+        print()

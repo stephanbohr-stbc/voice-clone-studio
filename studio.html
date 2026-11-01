@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aufnahme-Studio</title>
+<style>
+  :root {
+    --bg:#11131a; --flaeche:#1a1d27; --rand:#2a2f3d;
+    --text:#e8eaf0; --leise:#8891a6;
+    --gut:#3ddc84; --warn:#ffb020; --schlecht:#ff4d4d; --akzent:#5b8cff;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display:grid; grid-template-columns: 1fr 380px; height:100vh; overflow:hidden;
+  }
+  @media (max-width: 900px) { body { grid-template-columns:1fr; grid-template-rows:1fr auto; } }
+
+  /* ---------- Prompter ---------- */
+  #prompter { position:relative; overflow:hidden; background:#0d0f15; }
+  #lauf { position:absolute; width:100%; padding:45vh 8% 60vh; transition:transform .1s linear; }
+  #lauf p { font-size:var(--gross,30px); line-height:1.75; margin:0 0 1.5em; }
+  #marke {
+    position:absolute; top:42vh; left:0; right:0; height:3px;
+    background:linear-gradient(90deg,transparent,var(--akzent),transparent); opacity:.5;
+  }
+  #zustand {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    flex-direction:column; background:rgba(13,15,21,.93); z-index:5; text-align:center;
+  }
+  #zustand.weg { display:none; }
+  #zustand { pointer-events:none; }
+  #lauf p { cursor:pointer; }
+  #lampe {
+    position:absolute; top:18px; left:50%; transform:translateX(-50%); z-index:6;
+    display:none; align-items:center; gap:11px; padding:9px 18px; border-radius:999px;
+    background:rgba(255,77,77,.14); border:1px solid var(--schlecht);
+    font-variant-numeric:tabular-nums; font-size:17px; font-weight:600;
+  }
+  #lampe.an { display:flex; }
+  #punkt { width:12px; height:12px; border-radius:50%; background:var(--schlecht);
+           animation:blinken 1.1s infinite; }
+  @keyframes blinken { 0%,100%{opacity:1} 50%{opacity:.25} }
+  #wohin { color:var(--leise); font-weight:400; font-size:14px; }
+  #gross { font-size:clamp(60px,14vw,170px); font-weight:700; line-height:1; }
+  #klein { color:var(--leise); margin-top:20px; font-size:20px; }
+
+  /* ---------- Bedienpult ---------- */
+  #pult { background:var(--flaeche); border-left:1px solid var(--rand);
+          padding:22px; overflow-y:auto; }
+  h1 { font-size:15px; text-transform:uppercase; letter-spacing:.1em;
+       color:var(--leise); margin:0 0 18px; font-weight:600; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--leise); margin:24px 0 10px; font-weight:600; }
+
+  /* Pegel */
+  #pegelbox { background:#0d0f15; border:1px solid var(--rand); border-radius:10px; padding:14px; }
+  #balken { height:26px; background:#070910; border-radius:5px; overflow:hidden; position:relative; }
+  #fuell { height:100%; width:0%; transition:width .08s linear; background:var(--gut); }
+  #ziel { position:absolute; top:0; bottom:0; left:88.3%; width:2px; background:var(--akzent); }
+  #zone { position:absolute; top:0; bottom:0; left:80%; width:11.7%;
+          background:rgba(61,220,132,.13); pointer-events:none; }
+  #zahl { display:flex; justify-content:space-between; margin-top:8px;
+          font-variant-numeric:tabular-nums; font-size:14px; }
+  #urteil { font-weight:600; }
+  #skala { display:flex; justify-content:space-between; color:var(--leise);
+           font-size:11px; margin-top:3px; }
+
+  select, button {
+    width:100%; padding:11px 13px; border-radius:9px; border:1px solid var(--rand);
+    background:#0d0f15; color:var(--text); font-size:15px; font-family:inherit;
+  }
+  button { cursor:pointer; font-weight:600; margin-top:9px; transition:.15s; }
+  button:hover:not(:disabled) { border-color:var(--akzent); }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  #los  { background:var(--gut); color:#06230f; border-color:transparent; }
+  #halt { background:var(--schlecht); color:#2b0606; border-color:transparent; }
+
+  .reihe { display:flex; gap:9px; align-items:center; margin-top:9px; }
+  .reihe label { color:var(--leise); font-size:13px; white-space:nowrap; }
+  input[type=range] { flex:1; accent-color:var(--akzent); }
+
+  #ergebnis { margin-top:6px; font-size:14px; }
+  .zeile { display:flex; justify-content:space-between; padding:7px 0;
+           border-bottom:1px solid var(--rand); font-variant-numeric:tabular-nums; }
+  .zeile:last-child { border-bottom:none; }
+  .gut{color:var(--gut)} .warn{color:var(--warn)} .schlecht{color:var(--schlecht)}
+  .hinweis { color:var(--leise); font-size:13px; margin-top:12px; line-height:1.5; }
+  #stand { color:var(--leise); font-size:13px; margin-top:4px; }
+  #mikrowarnung { font-size:13px; margin-top:7px; line-height:1.45; }
+  #mikrowarnung.ok     { color:var(--gut); }
+  #mikrowarnung.achtung{ color:var(--warn); }
+  #mikrowarnung.fehlt  { color:var(--schlecht); }
+  #pause { background:var(--warn); color:#2b1c00; border-color:transparent; }
+  #marke { margin-top:9px; }
+  #markenliste { color:var(--leise); font-size:13px; margin-top:8px; }
+  #radanzeige { position:absolute; top:24px; right:28px; z-index:50; padding:8px 16px;
+                border-radius:8px; background:rgba(13,15,21,.85); border:1px solid var(--rand);
+                font-size:20px; font-variant-numeric:tabular-nums; opacity:0; transition:opacity .25s; }
+  #radanzeige.an { opacity:1; }
+  kbd { background:#0d0f15; border:1px solid var(--rand); border-radius:4px;
+        padding:1px 6px; font-size:12px; font-family:inherit; }
+</style>
+</head>
+<body>
+
+<div id="prompter">
+  <div id="lampe"><span id="punkt"></span><span id="uhr">0:00</span><span id="wohin"></span></div>
+  <div id="marke"></div>
+  <div id="lauf"></div>
+  <div id="radanzeige"></div>
+  <div id="zustand"><div id="gross">BEREIT</div><div id="klein">Block wählen, dann Aufnahme starten</div></div>
+</div>
+
+<div id="pult">
+  <h1>Aufnahme-Studio</h1>
+
+  <h2>Mikrofon</h2>
+  <select id="geraet"></select>
+  <div id="mikrowarnung"></div>
+  <button id="referenz" style="display:none">Dieses Mikro als Referenz setzen</button>
+
+  <div id="pegelbox">
+    <div id="balken"><div id="zone"></div><div id="fuell"></div><div id="ziel"></div></div>
+    <div id="zahl"><span id="dbfs">—</span><span id="urteil">kein Signal</span></div>
+    <div id="skala"><span>−60</span><span>−30</span><span>−12</span><span>0 dBFS</span></div>
+  </div>
+  <div id="stand"></div>
+
+  <h2>Block</h2>
+  <select id="block"></select>
+
+  <button id="los">Aufnahme starten</button>
+  <button id="pause" style="display:none">Pause</button>
+  <button id="marke" style="display:none">Versprecher markieren</button>
+  <button id="halt" style="display:none">Aufnahme beenden</button>
+  <div id="markenliste"></div>
+
+  <h2>Prompter</h2>
+  <div class="reihe"><label>Tempo</label><input type="range" id="tempo" min="0" max="60" value="22"><span id="tempozahl">22</span></div>
+  <div class="reihe"><label>Schrift</label><input type="range" id="schrift" min="18" max="60" value="30"><span id="schriftzahl">30</span></div>
+  <button id="zurueck">An den Anfang</button>
+
+  <div id="ergebnis"></div>
+
+  <div class="hinweis">
+    <kbd>Leertaste</kbd> Prompter anhalten · <kbd>R</kbd> Aufnahme starten/beenden<br>
+    <kbd>P</kbd> Pause · <kbd>M</kbd> Versprecher markieren<br>
+    Mausrad über dem Text: Tempo · <kbd>⇧</kbd> + Mausrad: Text zurückholen<br>
+    Steht der Text: Mausrad blättert, Klick auf einen Absatz springt dorthin.
+    Die Stelle wird pro Block gemerkt.<br><br>
+    Aufgenommen wird von sox, roh in 24 Bit / 48 kHz. Der Browser zeigt nur an —
+    er würde sonst Rauschunterdrückung und Pegelautomatik hinzufügen, die der Klon mitlernt.
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let laeuft = false, scrollen = false, pos = 0, tempo = 22, pausiert = false;
+
+function melden(titel, text) {
+  $('#zustand').classList.remove('weg');
+  $('#gross').textContent = titel;
+  $('#klein').innerHTML = text;
+}
+
+async function hole(pfad, daten) {
+  const o = daten
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(daten) }
+    : {};
+  const a = await fetch(pfad, o);
+  if (!a.ok) throw new Error(`${pfad}: HTTP ${a.status}`);
+  return a.json();
+}
+
+/* ---------- Prompter ---------- */
+/* Die Leseposition wird pro Block im Browser gemerkt. So geht es nach dem
+   Stopp eines Teil-Takes (oder nach einem Neuladen) an derselben Stelle weiter. */
+let geladenerBlock = null, zuletztGemerkt = 0;
+function merken() {
+  if (!geladenerBlock) return;
+  try {
+    localStorage.setItem('vc-pos:' + geladenerBlock, String(Math.round(pos)));
+    localStorage.setItem('vc-block', geladenerBlock);
+  } catch (e) {}
+}
+function gemerkt(schluessel) {
+  try { return localStorage.getItem(schluessel); } catch (e) { return null; }
+}
+function setzePos(p) {
+  pos = Math.max(0, p);
+  $('#lauf').style.transform = `translateY(${-pos}px)`;
+  merken();
+}
+
+function tick(t) {
+  if (scrollen) {
+    pos += tempo / 60;
+    $('#lauf').style.transform = `translateY(${-pos}px)`;
+    if (t - zuletztGemerkt > 1000) { zuletztGemerkt = t; merken(); }
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+/* Klick auf einen Absatz: dieser Absatz rueckt an die Lesezeile. */
+$('#lauf').addEventListener('click', e => {
+  const p = e.target.closest('p');
+  const erster = $('#lauf p');
+  if (!p || !erster) return;
+  setzePos(p.offsetTop - erster.offsetTop);
+  if (!laeuft) $('#zustand').classList.add('weg');   // Schleier weg, damit man sieht, wo man steht
+  radAnzeigen('➜ hier geht es weiter');
+});
+
+$('#tempo').oninput = e => { tempo = +e.target.value; $('#tempozahl').textContent = tempo; };
+
+/* Mausrad ueber dem Text: Laeuft der Prompter, regelt es das Tempo, ohne die
+   Aufnahme anzuhalten. Steht er (vor dem Start, Pause, Leertaste) oder ist
+   Shift gedrueckt, verschiebt es den Text - zum Zurueckholen oder Hinspringen.
+   Beide Male gilt: Rad "zurueck" = langsamer bzw. Text kommt zurueck. */
+let anzeigeUhr = null, letzterSchritt = 0;
+function radAnzeigen(text) {
+  const a = $('#radanzeige');
+  a.textContent = text; a.classList.add('an');
+  clearTimeout(anzeigeUhr);
+  anzeigeUhr = setTimeout(() => a.classList.remove('an'), 1200);
+}
+$('#prompter').addEventListener('wheel', e => {
+  e.preventDefault();
+  const d = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 30 : 1);   // Shift+Rad kommt in Safari als deltaX
+  if (!d) return;
+  if (e.shiftKey || !scrollen) {
+    setzePos(pos + d);
+    if (!laeuft) $('#zustand').classList.add('weg');
+    radAnzeigen(d < 0 ? '▲ zurück' : '▼ vor');
+    return;
+  }
+  const jetzt = performance.now();
+  if (jetzt - letzterSchritt < 80) return;      // Trackpad feuert Dutzende Ereignisse pro Geste
+  letzterSchritt = jetzt;
+  tempo = Math.max(0, Math.min(60, tempo + Math.sign(d)));
+  $('#tempo').value = tempo; $('#tempozahl').textContent = tempo;
+  radAnzeigen(`Tempo ${tempo}`);
+}, { passive: false });
+$('#schrift').oninput = e => {
+  $('#lauf').style.setProperty('--gross', e.target.value + 'px');
+  $('#schriftzahl').textContent = e.target.value;
+};
+$('#zurueck').onclick = () => setzePos(0);
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); scrollen = !scrollen; }
+  const k = e.key.toLowerCase();
+  if (k === 'r') laeuft ? beenden() : starten();
+  if (k === 'p' && laeuft) pausieren();
+  if (k === 'm' && laeuft && !pausiert) markieren();
+});
+
+/* ---------- Pegel ---------- */
+let sseOk = false;
+const quelle = new EventSource('/api/meter');
+quelle.onerror = () => { if (!sseOk) { quelle.close(); pollen(); } };
+setTimeout(() => { if (!sseOk) { quelle.close(); pollen(); } }, 3000);
+
+function pollen() {                       // Rueckfallebene, falls der Strom nicht ankommt
+  setInterval(async () => {
+    try { zeigen(await hole('/api/pegel')); } catch (e) {}
+  }, 200);
+}
+
+quelle.onmessage = e => { sseOk = true; zeigen(JSON.parse(e.data)); };
+
+function zeigen(d) {
+  const v = d.pegel;
+  const breite = Math.max(0, Math.min(100, (v + 60) / 60 * 100));
+  $('#fuell').style.width = breite + '%';
+  $('#dbfs').textContent = v <= -89 ? '—' : v.toFixed(1) + ' dBFS';
+
+  let farbe, text;
+  if (v > -1)       { farbe = 'var(--schlecht)'; text = 'CLIPPING'; }
+  else if (v > -3)  { farbe = 'var(--warn)';     text = 'zu heiß'; }
+  else if (v > -12) { farbe = 'var(--gut)';      text = 'gut'; }
+  else if (v > -25) { farbe = 'var(--warn)';     text = 'leise'; }
+  else              { farbe = 'var(--leise)';    text = 'sehr leise'; }
+  $('#fuell').style.background = farbe;
+  $('#urteil').style.color = farbe;
+  $('#urteil').textContent = text;
+
+  if (d.aufnahme) {
+    const m = Math.floor(d.sekunden / 60), s = Math.floor(d.sekunden % 60);
+    $('#uhr').textContent = `${m}:${String(s).padStart(2, '0')}`;
+    $('#lampe').style.opacity = d.pausiert ? '.45' : '1';
+    $('#punkt').style.animationPlayState = d.pausiert ? 'paused' : 'running';
+  }
+}
+
+/* ---------- Blöcke ---------- */
+async function geraeteLaden() {
+  let d;
+  try { d = await hole('/api/geraete'); } catch (e) { return; }
+  $('#geraet').innerHTML = d.geraete.map(g =>
+    `<option value="${g.name}"${g.name === d.aktuell ? ' selected' : ''}>${g.name}</option>`).join('');
+  mikroUrteil(d.aktuell, d.wunsch, d.gefunden);
+}
+function mikroUrteil(aktuell, wunsch, gefunden) {
+  const w = $('#mikrowarnung');
+  if (!gefunden) {
+    w.className = 'fehlt';
+    w.textContent = `„${aktuell}" ist nicht angeschlossen.`;
+  } else if (aktuell !== wunsch) {
+    w.className = 'achtung';
+    w.innerHTML = `Trainiert wird mit <b>${wunsch}</b>.<br>` +
+                  'Takes mit diesem Mikro gehören NICHT ins Material.';
+    $('#referenz').style.display = 'block';
+  } else {
+    w.className = 'ok';
+    w.textContent = 'Richtiges Mikrofon, bereit zum Aufnehmen.';
+    $('#referenz').style.display = 'none';
+  }
+}
+$('#referenz').onclick = async () => {
+  await hole('/api/geraet', { name: $('#geraet').value, als_referenz: true });
+  const g = await hole('/api/geraete');
+  mikroUrteil(g.aktuell, g.wunsch, g.gefunden);
+};
+$('#geraet').onchange = async e => {
+  const d = await hole('/api/geraet', { name: e.target.value });
+  const g = await hole('/api/geraete');
+  mikroUrteil(g.aktuell, g.wunsch, g.gefunden);
+};
+
+async function bloeckeLaden() {
+  let d;
+  try { d = await hole('/api/blocks'); }
+  catch (e) { melden('KEINE VERBINDUNG', 'Server nicht erreichbar.<br><small>' + e.message + '</small>'); return; }
+  $('#block').innerHTML = d.texte.map(t =>
+    `<option value="${t.name}">${t.name} · ${t.minuten} min</option>`).join('');
+  $('#stand').textContent = `${d.material} min Material · Mikro: ${d.mikro}` +
+    (d.gefunden ? '' : ' — NICHT GEFUNDEN');
+  // Gewaehlten Block halten - nach dem Stopp nicht auf den ersten zurueckspringen
+  const namen = d.texte.map(t => t.name);
+  const wunsch = geladenerBlock || gemerkt('vc-block');
+  const block = namen.includes(wunsch) ? wunsch : namen[0];
+  if (!block) return;
+  $('#block').value = block;
+  if (block !== geladenerBlock) textLaden(block);
+}
+async function textLaden(name) {
+  let d;
+  try { d = await hole('/api/text?block=' + encodeURIComponent(name)); }
+  catch (e) { return; }
+  $('#lauf').innerHTML = d.text.split(/\n\s*\n/)
+    .filter(a => a.trim()).map(a => `<p>${a.replace(/</g, '&lt;').trim()}</p>`).join('');
+  geladenerBlock = name;
+  setzePos(+(gemerkt('vc-pos:' + name) || 0));
+}
+$('#block').onchange = e => textLaden(e.target.value);
+
+/* ---------- Aufnahme ---------- */
+async function starten() {
+  if (laeuft) return;
+  $('#ergebnis').innerHTML = '';
+  $('#zustand').classList.remove('weg');
+
+  // erst pruefen, dann zaehlen - sonst zaehlt er ins Leere
+  let vor;
+  try { vor = await hole('/api/blocks'); }
+  catch (e) { melden('KEINE VERBINDUNG', 'Server nicht erreichbar.<br><small>' + e.message + '</small>'); return; }
+  if (!vor.gefunden) {
+    $('#gross').textContent = 'KEIN MIKRO';
+    $('#klein').innerHTML = `„${vor.mikro}" ist nicht am USB.<br>` +
+      'Anschließen, oder Studio mit anderem Gerät starten:<br>' +
+      '<code>VC_MIC="MacBook Pro-Mikrofon" ./studio.py</code>';
+    return;
+  }
+  for (const n of [3, 2, 1]) {
+    $('#gross').textContent = n;
+    $('#klein').textContent = 'gleich geht es los';
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  let d;
+  try { d = await hole('/api/start', { block: $('#block').value }); }
+  catch (e) { melden('FEHLER BEIM START', e.message); return; }
+  if (!d.datei) { melden('FEHLER', 'Aufnahme konnte nicht gestartet werden'); return; }
+
+  laeuft = true; scrollen = true;
+  $('#los').style.display = 'none';
+  $('#pause').style.display = 'block';
+  $('#marke').style.display = 'block';
+  $('#halt').style.display = 'block';
+  $('#markenliste').textContent = '';
+  $('#gross').textContent = 'SPRICH';
+  $('#klein').textContent = d.datei;
+  $('#wohin').textContent = d.datei;
+  $('#lampe').classList.add('an');
+  setTimeout(() => $('#zustand').classList.add('weg'), 1100);
+}
+
+async function pausieren() {
+  if (!laeuft) return;
+  if (!pausiert) {
+    await hole('/api/pause', {});
+    pausiert = true; scrollen = false;
+    $('#pause').textContent = 'Weiter';
+    melden('PAUSE', 'Trink etwas. Mit „Weiter" geht es da weiter, wo du aufgehört hast.');
+  } else {
+    const r = await hole('/api/weiter', {});
+    if (!r.laeuft) { melden('FEHLER', 'Fortsetzen nicht möglich'); return; }
+    pausiert = false;
+    $('#pause').textContent = 'Pause';
+    for (const n of [3, 2, 1]) {
+      $('#gross').textContent = n; $('#klein').textContent = 'gleich weiter';
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    $('#zustand').classList.add('weg');
+    scrollen = true;
+  }
+}
+
+async function markieren() {
+  const r = await hole('/api/marke', {});
+  if (r.bei === null) return;
+  const m = Math.floor(r.bei / 60), s2 = Math.floor(r.bei % 60);
+  $('#markenliste').textContent =
+    `${r.anzahl} Markierung${r.anzahl === 1 ? '' : 'en'} · zuletzt ${m}:${String(s2).padStart(2,'0')}`;
+}
+
+async function beenden() {
+  if (!laeuft) return;
+  laeuft = false; scrollen = false; pausiert = false;
+  $('#lampe').classList.remove('an');
+  $('#pause').style.display = 'none';
+  $('#pause').textContent = 'Pause';
+  $('#marke').style.display = 'none';
+  $('#halt').style.display = 'none';
+  $('#los').style.display = 'block';
+  $('#zustand').classList.remove('weg');
+  $('#gross').textContent = '…';
+  $('#klein').textContent = 'wird ausgewertet';
+
+  let r;
+  try { r = await hole('/api/stop', {}); }
+  catch (e) { melden('FEHLER BEIM BEENDEN', e.message); return; }
+  if (r.fehler) { melden('FEHLER', r.fehler); return; }
+
+  const bewerten = (wert, gut, warn, einheit, nachkomma = 0) => {
+    if (wert === null || wert === undefined) return ['—', ''];
+    const k = gut(wert) ? 'gut' : (warn(wert) ? 'warn' : 'schlecht');
+    return [wert.toFixed(nachkomma) + einheit, k];
+  };
+  const zeilen = [
+    ['Länge',          ...bewerten(r.minuten, v => v >= 2, v => v >= 1, ' min', 1)],
+    ['Spitze',         ...bewerten(r.spitze,  v => v > -14 && v < -3, v => v < -1, ' dBFS', 1)],
+    ['Lautheit',       [r.lufs ? r.lufs.toFixed(1) + ' LUFS' : '—'], ''],
+    ['Rauschabstand',  ...bewerten(r.snr,     v => v >= 45, v => v >= 38, ' dB')],
+    ['Mundgeräusche',  ...bewerten(r.mund,    v => v <= 20, v => v <= 30, '/min', 0)],
+  ];
+  $('#ergebnis').innerHTML = '<h2>' + r.datei + '</h2>' + zeilen.map(
+    ([n, w, k]) => `<div class="zeile"><span>${n}</span><span class="${k}">${w}</span></div>`
+  ).join('') + (r.marken && r.marken.length
+      ? `<div class="hinweis">Markierte Stellen: ${r.marken.map(t => {
+           const m = Math.floor(t/60), s2 = Math.floor(t%60);
+           return `${m}:${String(s2).padStart(2,'0')}`; }).join(' · ')}</div>`
+      : '') + `<div class="hinweis">Material gesamt: ${r.material} min</div>`;
+
+  const schlimm = (r.mund > 20) || (r.snr !== null && r.snr < 45);
+  $('#gross').textContent = schlimm ? 'PRÜFEN' : 'GUT';
+  $('#klein').textContent = r.mund > 20
+    ? `${r.mund} Mundgeräusche/min — weiter weg, Wasser trinken`
+    : (r.snr < 45 ? `Rauschabstand nur ${r.snr} dB` : 'Take ist brauchbar');
+  bloeckeLaden();
+}
+
+$('#los').onclick = starten;
+$('#pause').onclick = pausieren;
+$('#marke').onclick = markieren;
+$('#halt').onclick = beenden;
+geraeteLaden();
+bloeckeLaden();
+</script>
+</body>
+</html>

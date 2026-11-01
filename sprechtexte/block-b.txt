@@ -1,0 +1,18 @@
+HINWEIS: Die Eigennamen am Ende durch die eigenen ersetzen
+(Firma, Kollegen, Orte) - der Klon soll DEINE Namen koennen.
+
+BLOCK B — Zahlen, Kürzel, Anglizismen, Eigennamen (~10 Min)
+
+··· Zahlen im Fließtext ···
+
+Das Modul dauert vierundzwanzig Minuten. Wir treffen uns um neun Uhr dreißig. Der Lehrgang umfasst neunzig Präsenzstunden und zweihundert Stunden Eigenarbeit. Das sind vier Komma fünf Prozent mehr als im Vorjahr. Die Rechnungsnummer lautet M-U-S-T zwei-null-zwei-sechs eins-null-null-eins. Der Preis beträgt viertausendneunhundertfünfzig Euro. Siebzig Prozent der Unternehmen im deutschsprachigen Raum berichten von einem konkreten Qualifizierungsbedarf.
+
+··· Kürzel — buchstabiert ···
+
+K-I. A-I. M-U-S-T. A-Z-A-V. B-A-F-A. I-H-K. D-S-G-V-O. E-U-A-I-Act. Q-M-S. H-R-B. U-S-t-I-D. P-D-F. U-R-L. A-P-I. C-S-V. H-T-M-L. L-L-M. R-A-G. M-C-P. C-R-M. K-P-I. R-O-I.
+
+Wir bauen einen Workflow, der den Agent über eine Schnittstelle anspricht. Der Prompt liefert den Kontext, das Modell liefert den Output. Achte auf saubere Guardrails, sonst wird das Deployment zum Risiko. Ein gutes Briefing spart dir drei Iterationen im Review. Das Framework kombiniert Retrieval, Reasoning und Tool Use. Wir arbeiten mit Claude, mit ChatGPT und mit lokalen Open-Source-Modellen. Der Use Case entscheidet über das Tooling, nicht andersherum. Kein Hype, kein Buzzword-Bingo — messbare Ergebnisse. Copy, Paste, Prompt, Chain, Token, Embedding, Vektor, Latenz, Halluzination, Fine-Tuning, Inference, Benchmark.
+
+··· Eigennamen (durch deine eigenen ersetzen) ···
+
+Musterfirma GmbH. Erika Musterfrau. Max Mustermann. Frankfurt am Main. Hamburg. München. Köln.

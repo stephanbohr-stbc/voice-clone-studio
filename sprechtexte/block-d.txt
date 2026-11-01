@@ -1,0 +1,13 @@
+BLOCK D — Lehr-Duktus (~30 Min)
+
+Bevor wir einsteigen, kurz die Einordnung. Sie werden gleich drei Dinge sehen. Erstens: wie ein Prompt aufgebaut ist, der wirklich funktioniert. Zweitens: warum die meisten Prompts scheitern — und zwar aus einem einzigen, immer gleichen Grund. Und drittens: wie Sie daraus eine Vorlage bauen, die Sie hundertmal wiederverwenden. Fangen wir mit dem häufigsten Fehler an.
+
+Schauen Sie sich das einmal genau an. Was fällt Ihnen auf? Richtig — dem Modell fehlt der Kontext. Es weiß nicht, für wen der Text ist, es weiß nicht, wie lang er werden soll, und es weiß vor allem nicht, woran Sie messen, ob das Ergebnis gut ist. Und ein System, das nicht weiß, woran es gemessen wird, kann nicht liefern. Genau wie ein Mensch übrigens.
+
+Halten wir kurz fest. Kontext schlägt Formulierung. Beispiele schlagen Beschreibung. Und ein klares Abbruchkriterium schlägt alles andere. Wenn Sie sich aus diesem Modul nur einen Satz merken, dann diesen.
+
+Jetzt sind Sie dran. Nehmen Sie sich eine Aufgabe aus Ihrem eigenen Arbeitsalltag — irgendetwas, das Sie diese Woche ohnehin erledigen müssen. Schreiben Sie den Prompt einmal so, wie Sie es bisher gemacht hätten. Und dann noch einmal, mit allem, was wir gerade besprochen haben. Vergleichen Sie die beiden Ergebnisse. Nehmen Sie sich dafür zehn Minuten.
+
+Das war der schwierigste Teil dieses Moduls. Wenn Sie bis hierhin mitgekommen sind, wird der Rest deutlich leichter. Und falls nicht: Das ist völlig in Ordnung. Gehen Sie zwei Abschnitte zurück und machen Sie die Übung noch einmal. Es gibt keinen Preis für Schnelligkeit.
+
+Ein Hinweis noch, bevor wir weitermachen. Was Sie hier lernen, funktioniert unabhängig vom Werkzeug. Die Oberflächen ändern sich alle paar Monate, die Modelle werden besser, die Anbieter wechseln. Das Prinzip dahinter bleibt. Deshalb investieren wir hier in Prinzipien und nicht in Klickpfade.
